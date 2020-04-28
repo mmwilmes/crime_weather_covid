@@ -1,0 +1,80 @@
+---
+title: "The influence of weather and a pandemic on crime"
+output: html_notebook
+---
+
+```{r install packages, include=FALSE, eval=FALSE, echo=FALSE} 
+# set eval=TRUE if running script for the first time
+# install.packages("bigrquery")
+# install.packages("devtools") 
+# devtools::install_github("rstats-db/bigrquery", force = TRUE)
+```
+
+```{r}
+library(bigrquery)
+library(ggplot2)
+library(tidyr)
+library(dplyr)
+library(lubridate) # handle date information
+```
+
+
+```{r set up credentials}
+# Set Google Cloud project ID here
+project <- ""
+```
+
+```{r setup request}
+sql <- "SELECT 
+  iucr,
+  primary_type,
+  description, date, COUNT(*) AS counts
+FROM `bigquery-public-data.chicago_crime.crime` 
+WHERE iucr = '0460'
+GROUP BY 
+  iucr,
+  primary_type,
+  description,
+  date;"
+```
+
+```{r execute SQL call}
+# Execute the query and store the result
+query_results <- query_exec(sql, project = project, use_legacy_sql = FALSE)
+```
+
+```{r}
+head(query_results[order(query_results$counts, decreasing = TRUE),])
+```
+```{r add day column}
+data <- query_results %>% 
+  mutate(date = as.Date(date, format = "%m/%d/%y")) %>%
+  mutate(year = year(date))  %>%
+  mutate(month = month(date)) %>%
+  mutate(day = day(date))
+```
+
+```{r}
+head(data)
+```
+
+```{r aggregate counts per months}
+# calculate the sum precipitation for each month
+counts_by_month <- data %>%
+  group_by(month, year) %>%
+  summarise(sum_counts = sum(counts))
+```
+
+```{r}
+str(counts_by_month)
+```
+
+
+```{r visualize year, eval=TRUE}
+# counts_by_year %>% filter(iucr == '0460')  %>%
+counts_by_month %>%
+ggplot(aes(x = month, y = sum_counts)) + 
+  geom_point(aes(colour = year))
+```
+
+
