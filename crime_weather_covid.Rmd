@@ -1,34 +1,54 @@
 ---
 title: "The influence of weather and a pandemic on crime"
-output: html_notebook
+output:
+  html_document:
+    df_print: paged
 ---
+```{r Markdown cheatsheet, echo=FALSE}
+# echo=FALSE prevents code, but not the results from appearing in the rendered file
+# eval=TRUE evaluates the code and includes the results
+# results='hide' hides the results but displays the code
+```
 
-```{r install packages, include=FALSE, eval=FALSE, echo=FALSE} 
+
+### Install packages (if required)
+
+```{r install packages, eval=FALSE} 
 # set eval=TRUE if running script for the first time
 # install.packages("bigrquery")
 # install.packages("devtools") 
 # devtools::install_github("rstats-db/bigrquery", force = TRUE)
 ```
 
-```{r}
+### Load packages (each session)
+
+```{r eval=TRUE, results='hide'}
 library(bigrquery)
 library(ggplot2)
 library(tidyr)
 library(dplyr)
 library(lubridate) # handle date information
+library(readr) # read txt file with credentials
 ```
 
-
-```{r set up credentials}
+### Retrieve Google Cloud credentials
+Retrieve Google Cloud project ID, which I store in an external file (not uploaded to github).
+```{r set up credentials, }
 # Set Google Cloud project ID here
-project <- ""
+project_name <- read_file("./GC_credentials.txt")
 ```
+
+### Define SQL query 
+ The statement needs to be written in Standard SQL. 
+ More info in the [BigQuery documentation](cloud.google.com/bigquery/docs/reference/standard-sql/) 
 
 ```{r setup request}
 sql <- "SELECT 
   iucr,
   primary_type,
-  description, date, COUNT(*) AS counts
+  description, 
+  date, 
+  COUNT(*) AS counts
 FROM `bigquery-public-data.chicago_crime.crime` 
 WHERE iucr = '0460'
 GROUP BY 
@@ -40,8 +60,12 @@ GROUP BY
 
 ```{r execute SQL call}
 # Execute the query and store the result
-query_results <- query_exec(sql, project = project, use_legacy_sql = FALSE)
+query_results <- query_exec(sql, project = project_name, use_legacy_sql = FALSE, max_pages = Inf)
 ```
+```{r}
+str(query_results)
+```
+
 
 ```{r}
 head(query_results[order(query_results$counts, decreasing = TRUE),])
