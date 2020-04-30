@@ -1,3 +1,9 @@
+# Rendered HTML
+*.nb.html
+
+# Credentials
+GC_credentials.txt
+
 # History files
 .Rhistory
 .Rapp.history
