@@ -38,38 +38,67 @@ Retrieve Google Cloud project ID, which I store in an external file (not uploade
 project_name <- read_file("./GC_credentials.txt")
 ```
 
-### Define SQL query 
+### Generate a table with counts by year and offence
  The statement needs to be written in Standard SQL. 
  More info in the [BigQuery documentation](cloud.google.com/bigquery/docs/reference/standard-sql/) 
 
 ```{r setup request}
-sql <- "SELECT 
+sql <- "
+SELECT 
   iucr,
   primary_type,
   description, 
-  date, 
+  year, 
   COUNT(*) AS counts
 FROM `bigquery-public-data.chicago_crime.crime` 
-WHERE iucr = '0460'
 GROUP BY 
   iucr,
   primary_type,
   description,
-  date;"
+  year
+ ORDER BY year ASC;
+"
 ```
 
 ```{r execute SQL call}
 # Execute the query and store the result
-query_results <- query_exec(sql, project = project_name, use_legacy_sql = FALSE, max_pages = Inf)
+counts_year <- query_exec(sql, project = project_name, use_legacy_sql = FALSE)
 ```
 ```{r}
-str(query_results)
+str(counts_year)
 ```
 
 
 ```{r}
-head(query_results[order(query_results$counts, decreasing = TRUE),])
+# order by highest offence counts (over all years)
+head(counts_year[order(counts_year$counts, decreasing = TRUE),])
 ```
+```{r Display in wide format}
+counts_wide <- counts_year %>% spread(year, counts, fill = NA, convert = FALSE)
+# display ordered by highest counts in 2020
+head(counts_wide[order(counts_wide$`2020`, decreasing=TRUE),])
+```
+
+```{r Plot trend over years}
+counts_year %>% 
+  group_by(year) %>%
+  summarise(yearly_total = sum(counts)) %>%
+  ggplot(aes(year, yearly_total)) + 
+  geom_line() + 
+  scale_y_continuous(labels = scales::number_format(accuracy = 10000, big.mark = ',')) +
+  labs(title = "Offence counts over years", 
+          subtitle = "Current year is incomplete.", y = "Number of offences", x = "Year") + 
+  theme_bw()
+```
+
+#cumview4 <- cumview3 %>% 
+#  group_by(Date, section) %>% 
+#  summarise(bysecCount = sum(Count)) %>%
+#  mutate(totCount = sum(bysecCount)) %>%
+#  mutate(pct = bysecCount/totCount * 100) %>%
+#  mutate(pct = round(pct,0))
+
+
 ```{r add day column}
 data <- query_results %>% 
   mutate(date = as.Date(date, format = "%m/%d/%y")) %>%
