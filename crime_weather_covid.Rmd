@@ -79,55 +79,99 @@ counts_wide <- counts_year %>% spread(year, counts, fill = NA, convert = FALSE)
 head(counts_wide[order(counts_wide$`2020`, decreasing=TRUE),])
 ```
 
-```{r Plot trend over years}
-counts_year %>% 
-  group_by(year) %>%
-  summarise(yearly_total = sum(counts)) %>%
-  ggplot(aes(year, yearly_total)) + 
-  geom_line() + 
-  scale_y_continuous(labels = scales::number_format(accuracy = 10000, big.mark = ',')) +
-  labs(title = "Offence counts over years", 
-          subtitle = "Current year is incomplete.", y = "Number of offences", x = "Year") + 
-  theme_bw()
+### How much data do we have?
+
+```{r}
+sql <- "SELECT COUNT(*)
+FROM `bigquery-public-data.chicago_crime.crime`;"
 ```
 
-#cumview4 <- cumview3 %>% 
-#  group_by(Date, section) %>% 
-#  summarise(bysecCount = sum(Count)) %>%
-#  mutate(totCount = sum(bysecCount)) %>%
-#  mutate(pct = bysecCount/totCount * 100) %>%
-#  mutate(pct = round(pct,0))
+```{r execute SQL call}
+# Execute the query and store the result
+counts <- query_exec(sql, project = project_name, use_legacy_sql = FALSE, max_pages = Inf)
+counts
+```
 
 
-```{r add day column}
-data <- query_results %>% 
+## Pull in date information for more granular time series analysis
+
+```{r setup request}
+sql <- "
+SELECT 
+  iucr,
+  primary_type,
+  description, 
+  date
+FROM `bigquery-public-data.chicago_crime.crime` 
+"
+```
+
+```{r execute SQL call}
+# Execute the query and store the result
+counts_day <- query_exec(sql, project = project_name, use_legacy_sql = FALSE, max_pages = Inf)
+str(counts_day)
+```
+
+```{r}
+head(counts_day)
+counts_day_copy <- counts_day
+```
+
+
+```{r tease out date information into separate columns}
+# generating the columns removes the need to create them ad hoc in every calculation below
+counts_day_parts <- counts_day %>% 
   mutate(date = as.Date(date, format = "%m/%d/%y")) %>%
-  mutate(year = year(date))  %>%
-  mutate(month = month(date)) %>%
-  mutate(day = day(date))
+  mutate(year = format(date, "%y"))  %>%
+  mutate(month = format(date, "%m")) %>%
+  mutate(day = format(date, "%d"))
+str(counts_day_parts)
 ```
+
 
 ```{r}
-head(data)
+# bar chart with counts for every day --> seasonality
+ggplot(counts_day_parts) + aes(x = date) + 
+  geom_bar()
 ```
 
-```{r aggregate counts per months}
-# calculate the sum precipitation for each month
-counts_by_month <- data %>%
-  group_by(month, year) %>%
-  summarise(sum_counts = sum(counts))
+
+```{r calculate the sum offense counts for each month per year}
+counts_day_parts$iucr <- factor(counts_day_parts$iucr)
+counts_day_parts$year <- as.integer(counts_day_parts$year)
+counts_day_parts$month <- as.integer(counts_day_parts$month)
+counts_day_parts$day <- as.integer(counts_day_parts$day)
+
+# specify package of function as there are naming conflicts
+per_month <- counts_day_parts %>% 
+  group_by(year, month) %>% 
+  dplyr::summarise(counts = dplyr::n())
+
+head(per_month)
 ```
 
+### plot monthly totals over years
 ```{r}
-str(counts_by_month)
-```
-
-
-```{r visualize year, eval=TRUE}
-# counts_by_year %>% filter(iucr == '0460')  %>%
-counts_by_month %>%
-ggplot(aes(x = month, y = sum_counts)) + 
-  geom_point(aes(colour = year))
+years <- format(seq(as.Date("2001/1/1"), by = "year", length.out = 20), "%Y")
+per_month %>%
+  # second month as date for axis
+  mutate(month2 = as.Date(paste0("2015-", month,"-01"),"%Y-%m-%d")) %>%
+  # second year as date for grouping
+  mutate(year2 = as.Date(paste0(year),"%y")) %>%
+  ggplot() + 
+  aes(x = month2, y = counts, color = factor(year2)) +
+  geom_line() +
+  labs(title = "Montly Counts of Offenses in Chicago",
+           subtitle = "Data plotted by year",
+           y = "Counts of monthly offenses",
+           x = "Month") + 
+  theme_minimal(base_size = 12) +
+  theme(legend.position = "bottom") +
+  scale_color_discrete(name="Year", labels = years) +
+  # format x labels
+  scale_x_date(date_labels = "%b", date_breaks = "2 months") +
+  # start plot at zero
+  scale_y_continuous(limits = c(0, 50000))
 ```
 
 
