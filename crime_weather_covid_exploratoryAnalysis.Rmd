@@ -1,0 +1,294 @@
+---
+title: "The influence of weather and a pandemic on crime"
+output:
+  html_document:
+    df_print: paged
+---
+```{r Markdown cheatsheet, echo=FALSE}
+# echo=FALSE prevents code, but not the results from appearing in the rendered file
+# eval=TRUE evaluates the code and includes the results
+# results='hide' hides the results but displays the code
+```
+
+
+### Install packages (if required)
+
+```{r install packages, eval=FALSE} 
+# set eval=TRUE if running script for the first time
+# install.packages("bigrquery")
+# install.packages("devtools") 
+# devtools::install_github("rstats-db/bigrquery", force = TRUE)
+```
+
+### Load packages
+
+```{r eval=TRUE, results='hide'}
+library(bigrquery)
+library(ggplot2)
+library(tidyr)
+library(dplyr)
+library(lubridate) # handle date information
+library(readr) # read txt file with credentials
+```
+
+### Retrieve Google Cloud credentials
+Retrieve Google Cloud project ID, which I store in an external file (not uploaded to github).
+```{r set up credentials, }
+# Set Google Cloud project ID here
+project_name <- read_file("./GC_credentials.txt")
+```
+
+### Generate a table with counts by year and offence
+ The statement needs to be written in Standard SQL. 
+ More info in the [BigQuery documentation](cloud.google.com/bigquery/docs/reference/standard-sql/) 
+
+```{r setup request}
+sql <- "
+SELECT 
+  iucr,
+  primary_type,
+  description, 
+  year, 
+  COUNT(*) AS counts
+FROM `bigquery-public-data.chicago_crime.crime` 
+GROUP BY 
+  iucr,
+  primary_type,
+  description,
+  year
+ ORDER BY year ASC;
+"
+```
+
+```{r execute SQL call}
+# Execute the query and store the result
+counts_year <- query_exec(sql, project = project_name, use_legacy_sql = FALSE)
+```
+```{r}
+str(counts_year)
+```
+
+
+```{r}
+# order by highest offence counts (over all years)
+head(counts_year[order(counts_year$counts, decreasing = TRUE),])
+```
+
+Represent data in a tabular format that is easier to digest visually (but not great for analysis)
+```{r Display in wide format}
+counts_wide <- counts_year %>% spread(year, counts, fill = NA, convert = FALSE)
+# display ordered by highest counts in 2020
+head(counts_wide[order(counts_wide$`2020`, decreasing=TRUE),])
+```
+
+### How much data do we have?
+
+```{r}
+sql <- "SELECT COUNT(*)
+FROM `bigquery-public-data.chicago_crime.crime`;"
+```
+
+```{r execute SQL call}
+# Execute the query and store the result
+counts <- query_exec(sql, project = project_name, use_legacy_sql = FALSE, max_pages = Inf)
+print(paste("There are ", counts, " rows in the database.", sep=""))
+```
+
+
+## Pull in date information for more granular time series analysis
+
+```{r setup request}
+sql <- "
+SELECT 
+  iucr,
+  primary_type,
+  description, 
+  date
+FROM `bigquery-public-data.chicago_crime.crime` 
+"
+```
+
+```{r execute SQL call}
+# Execute the query and store the result
+counts_day <- query_exec(sql, project = project_name, use_legacy_sql = FALSE, max_pages = Inf)
+str(counts_day)
+```
+
+```{r}
+head(counts_day)
+counts_day_copy <- counts_day
+```
+
+
+```{r tease out date information into separate columns}
+# generating the columns removes the need to create them ad hoc in every calculation below
+counts_day_parts <- counts_day %>% 
+  mutate(date = as.Date(date, format = "%m/%d/%y")) %>%
+  mutate(year = format(date, "%y"))  %>%
+  mutate(month = format(date, "%m")) %>%
+  mutate(day = format(date, "%d"))
+str(counts_day_parts)
+```
+
+
+```{r}
+# bar chart with counts for every day --> seasonality
+ggplot(counts_day_parts) + aes(x = date) + 
+  geom_bar() +
+  theme_bw()
+```
+The very granular bar chart reveals the downward trend of crime counts over the years, but also a strong seasonal component within eath year. We also reveal daily extremes, or "spikes," were the counts are a lot higher than counts on the day before or after. We can also identify the steep drop of crime rates with the onset of COVID-19 (Mar 2020).
+
+```{r calculate the sum offense counts for each month per year}
+counts_day_parts$iucr <- factor(counts_day_parts$iucr)
+counts_day_parts$year <- as.integer(counts_day_parts$year)
+counts_day_parts$month <- as.integer(counts_day_parts$month)
+counts_day_parts$day <- as.integer(counts_day_parts$day)
+
+# specify package of function as there are naming conflicts
+per_month <- counts_day_parts %>% 
+  group_by(year, month) %>% 
+  dplyr::summarise(counts = dplyr::n())
+
+head(per_month)
+```
+
+### plot monthly totals over years
+```{r}
+# generate position for labels (year 2001/2019, months Oct choosen for good position in plot)
+oct_2001 <- per_month[per_month$year == 1 & per_month$month == 10,]$counts
+oct_2019 <- per_month[per_month$year == 19 & per_month$month == 10,]$counts
+
+# years <- format(seq(as.Date("2001/1/1"), by = "year", length.out = 20), "%Y")
+per_month %>%
+  # second month as date for axis
+  mutate(month2 = as.Date(paste0("2015-", month,"-01"),"%Y-%m-%d")) %>%
+  # set color value depending on year
+  mutate(highlight=ifelse(year=="20", "color", "gray")) %>%
+  ggplot() + 
+  aes(x = month2, y = counts, group=year, color=highlight) +
+  geom_line(aes(size = highlight)) +
+  scale_size_manual(values=c(1.5, 0.5)) +
+  scale_color_manual(values = c("#0442BF", "lightgrey"), name = "Product", labels = c('Other', '2020')) +
+  labs(title = "Monthly Counts of Offenses in Chicago",
+           subtitle = "Each line represents one year, reavealing the seasonality of data.",
+           y = "No of Offenses",
+           x = "Month") + 
+  theme_minimal(base_size = 12) +
+  theme(legend.position = "none") +
+  # format x labels
+  scale_x_date(date_labels = "%b", date_breaks = "2 months") +
+  # start plot at zero
+  scale_y_continuous(limits = c(0, 50000), labels = scales::number_format(accuracy = 10000, big.mark = ',')) +
+  # add annotation to the plot
+  geom_segment(aes(x = as.Date("2015-10-01"), y = oct_2001, xend = as.Date("2015-10-01"), yend = oct_2019), color="darkgray", size=.8, arrow = arrow(length = unit(0.1, "inches"))) +
+  annotate("text", x = as.Date("2015-10-01"), y = oct_2001 + 2000, label = "Year 2001", size = 3) +
+  annotate("text", x = as.Date("2015-10-01"), y = oct_2019 - 2000, label = "Year 2019", size = 3) +
+  annotate("text", x = as.Date("2015-04-01"), y = 9000, label = "Year 2020", size = 3)
+# ggsave("MonthlyOffenseCounts.png")
+```
+
+
+```{r add colum}
+counts_day$count <- rep(1,nrow(counts_day))
+# sort by ascending date
+counts_day <- counts_day %>% arrange(date)
+```
+
+```{r aggregate counts per day}
+# group across offense types by day
+daily_counts <- counts_day %>%
+  dplyr::mutate(date = collapse_index(date, "daily")) %>%
+  dplyr::group_by(date) %>%
+  dplyr::summarise(counts = sum(count))
+```
+
+## tsibble: time-sensitive tibble
+1. Index is a variable with inherent ordering from past to present.
+2. Key is a set of variables that define observational units over time.
+3. Each observation should be uniquely identified by index and key.
+4. Each observational unit should be measured at a common interval, if regularly spaced.
+```{r time-aware tibble}
+# turn into time-sensitive tibble
+# works like a normal tibble but tracks time (set by index)
+daily_counts <- as_tsibble(daily_counts, index=date) %>% arrange(date)
+```
+
+
+```{r}
+daily_counts %>%
+ggplot() +
+  aes(date, counts, color=factor(year(date)), shape=".", alpha = 0.1) +
+  geom_point() +
+  labs(title = "Daily Counts of Offenses in Chicago",
+           subtitle = "Each dot represents one day, reavealing the seasonality of data.",
+           y = "No. of Offenses",
+           x = "Date") +
+  # remove grid lines
+  theme_bw() + theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(), legend.position="none")
+```
+
+### tstibble comes with numerous helpful functions
+
+# filter for specific time period
+```{r filter specific days}
+daily_counts %>%
+    filter_index('2019-01-01' ~ '2020-05-05')%>%
+    # Plotting
+    ggplot() +
+  aes(date, counts, color=factor(year(date))) +
+  geom_point() +
+  labs(title = "Daily Counts of Offenses in Chicago",
+           subtitle = "Each dot represents one day, reavealing the seasonality of data.",
+           y = "No. of Offenses",
+           x = "Date") +
+  # remove grid lines
+  theme_bw() + theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank())
+```
+
+# aggregate by months
+```{r summarize per months}
+monthly_counts <- daily_counts %>%
+  index_by(year_month = ~ yearmonth(.)) %>% # monthly aggregates
+  summarise(
+    min_counts = min(counts, na.rm = TRUE),
+    max_counts = max(counts, na.rm = TRUE),
+    ttl_counts = sum(counts, na.rm = TRUE)
+  )
+```
+
+```{r monthly counts using }
+# alternative approach (not using tsibble)
+#monthly_counts <- counts_tbl %>%
+#  dplyr::mutate(date = collapse_index(date, "monthly")) %>%
+#  dplyr::group_by(date) %>%
+#  dplyr::summarise(ttl_counts = sum(count))
+```
+
+
+```{r}
+monthly_counts %>%
+  mutate(ym_date = as_date(year_month)) %>%
+ggplot() +
+  aes(ym_date, ttl_counts, shape=".", alpha = 0.1) +
+  geom_point() +
+  # set titles
+  labs(title = "Monthly Counts of Offenses in Chicago",
+           subtitle = "Each dot represents total counts for one month. Loess smoothing emphasizes\nthe decline of offenses over the years.",
+           y = "No. of Offenses",
+           x = "Time") +
+  # format numbers
+  scale_y_continuous(labels = scales::number_format(accuracy = 10000, big.mark = ',')) +
+  geom_smooth() +
+  # remove grid lines
+  theme_bw() + theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(), legend.position="none") + 
+  # add annotation
+  geom_segment(aes(x = as.Date("2020-04-01"), y = 35000, xend = as.Date("2020-04-01"), yend = 25000), color="darkgray", size=.5, arrow = arrow(length = unit(0.1, "inches"))) +
+  annotate("text", x = as.Date("2020-1-01"), y = 37000, label = "COVID-19", size = 3)
+```
+About Loess regression:
+
+Loess, short for Local Regression, is a non-parametric approach that fits multiple regressions in local neighborhood. It be applied using the loess() on a numerical vector to smoothen it and to predict the Y locally (i.e, within the trained values of Xs). The size of the neighborhood can be controlled using the span argument, which ranges between 0 to 1. It controls the degree of smoothing. So, the greater the value of span, more smooth is the fitted curve.
+
+The predictor variable can just be indices from 1 to number of observations in the absence of explanatory variables. If other explanatory variables are available, they can be used as well (maximum of 4).
+
