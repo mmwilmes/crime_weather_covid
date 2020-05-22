@@ -37,9 +37,6 @@ library(tidyr)
 library(dplyr)
 library(lubridate) # handle date information
 library(readr) # read txt file with credentials
-#library(ggseas)
-#library(forecast)
-#library(data.table)
 library(fable)
 library(tsibble)
 library(feasts)
@@ -113,13 +110,42 @@ Only using data from all stations across Chicago, ensures that we have no gaps i
 
 However, we have one more row than expeted. TODO
 
-```{r}
+
+```{r plot temperature over time}
 weather %>% 
   mutate(diff = date - lag(date)) %>%
   ggplot(aes(date, temperature)) + geom_line()
 ```
 
 
+```{r plot snow depth over time}
+weather %>% 
+  mutate(diff = date - lag(date)) %>%
+  ggplot(aes(date, snow_depth)) + geom_point()
+```
+
+Turn data frame into a tsibble for easier plotting.
+
+```{r transform into tsibble}
+weather$date <- as.Date(weather$date)
+daily_weather <- as_tsibble(weather, index = date, regular = TRUE, interval = day)
+```
+
+
 ```{r}
-daily_weather <- as_tsibble(weather, index=date)
+daily_weather %>%
+    index_by(year_month = ~ yearmonth(.)) %>% # monthly aggregates
+  summarise(
+    ttl_prec = sum(precipitation, na.rm = TRUE)
+  ) %>%
+  gg_subseries(ttl_prec) +
+  ylab("Precipitation (mm)") +
+  xlab("Month/Year") +
+  ggtitle("Seasonal subseries plot: Monthly precipitation over the years")
+```
+
+The blue lines in each panel represents the mean per months (i.e., on average, May is the wettest month). Note that May 2020 is the wettest month in the entire period (since 2001).
+
+```{r write data to csv}
+write.csv(daily_weather, "weather_day.csv", row.names = FALSE)
 ```

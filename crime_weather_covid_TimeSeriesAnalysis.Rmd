@@ -13,7 +13,7 @@ output:
 
 ### Install packages (if required)
 
-```{r install packages, eval=FALSE} 
+```{r install packages, eval=FALSE, message=FALSE, warning=FALSE} 
 # set eval=TRUE if running script for the first time
 if(!require("ggseas")) install.packages("ggseas")
 if(!require("forecast")) install.packages("forecast")
@@ -28,30 +28,30 @@ if(!require("fable")) install.packages("fable")  # forecasting package of the ti
 
 ### Load packages
 
-```{r eval=TRUE, results='hide'}
+```{r eval=TRUE, message=FALSE, warning=FALSE}
 library(bigrquery)
 library(ggplot2)
 library(tidyr)
 library(dplyr)
 library(lubridate) # handle date information
 library(readr) # read txt file with credentials
-#library(ggseas)
-#library(forecast)
-#library(data.table)
 library(fable)
+library(tsibble)
+library(feasts)
+library(ggpmisc) # plot R^2 in scatter plot
 ```
 
 ### Retrieve Google Cloud credentials
 Retrieve Google Cloud project ID, which I store in an external file (not uploaded to github).
-```{r set up credentials, }
+```{r set up credentials, eval = FALSE}
 # Set Google Cloud project ID here
 project_name <- read_file("./GC_credentials.txt")
 ```
 
 
-## Retrieve data with date information
+### Retrieve data with date information
 
-```{r setup request}
+```{r setup request, eval = FALSE, echo = FALSE, message=FALSE, warning=FALSE}
 sql <- "
 SELECT 
   iucr,
@@ -64,27 +64,27 @@ FROM `bigquery-public-data.chicago_crime.crime`
 
 TODO: Cache locally and only fetch additional (recent) data.
 
-```{r execute SQL call}
+```{r execute SQL call, eval = FALSE, echo = FALSE}
 # Execute the query and store the result
 counts_day <- query_exec(sql, project = project_name, use_legacy_sql = FALSE, max_pages = Inf)
 str(counts_day)
 ```
 
-```{r write out csv}
+```{r write out csv, eval = FALSE, echo = FALSE}
 write.csv(counts_day, "counts_day.csv", row.names = FALSE)
 ```
 
-```{r}
+```{r read in data from csv}
 counts_day <- read.csv("counts_day.csv")
 head(counts_day)
-# format as date and drop the time part
+# format as date
 counts_day$date <- as.Date(ymd_hms(counts_day$date))
 head(counts_day)
 ```
 
 
 In the dataframe, each row stands for one offense of a particular type, at a particular time. We add a column of "counts", that for now is always one. This fascilitates summing up rows (e.g., by day) later on.
-```{r add colum}
+```{r add colum of ones --> one row is one offense count}
 counts_day$count <- rep(1,nrow(counts_day))
 # sort by ascending date
 counts_day <- counts_day %>% arrange(date)
@@ -94,13 +94,13 @@ counts_day <- counts_day %>% arrange(date)
 # group by day (across offense types)
 counts_day <- tibble(counts_day)
 
-daily_counts <- test %>%
+daily_counts <- counts_day %>%
   group_by(date) %>%
   summarize(counts = sum(count))
 head(daily_counts)
 ```
 
-## tsibble: time-sensitive tibble
+### tsibble: time-sensitive tibble
 1. Index is a variable with inherent ordering from past to present.
 2. Key is a set of variables that define observational units over time.
 3. Each observation should be uniquely identified by index and key.
@@ -114,22 +114,116 @@ daily_counts <- as_tsibble(daily_counts, index=date) %>% arrange(date)
 
 ## Time series analysis
 
-Is this a multiplicative or additive time series?
+Theory: 
+Forecasting: Principles and Practice
+Rob J Hyndman and George Athanasopoulos
+Monash University, Australia
+Available at https://otexts.com/fpp3/
+
+
+"a key step is knowing when something can be forecast accurately, and when forecasts will be no better than tossing a coin. Good forecasts capture the genuine patterns and relationships which exist in the historical data, but do not replicate past events that will not occur again. In this book, we will learn how to tell the difference between a random fluctuation in the past data that should be ignored, and a genuine pattern that should be modelled and extrapolated."
 
 Each time series has three components: 
 1) trend
 2) seasonality
 3) error
 
-# simple plot using the fable package
+```{r simple ts plot}
+# simple plot using the feasts package
 daily_counts %>% autoplot(counts)
+```
+
+The autoplot shows a consistent negative trend and strong seasonality
+
+Is this a multiplicative or additive time series?
+ - interaction between general seasonality and the underlying trend
+ - multiplicative time series: the components multiply; with de- or increasing trend, the amplitude of seasonal activity increases
+ - additive time series: components additive to make up time series; with increasing trend, you still see roughly the same size peaks and troughs throughout the time series; often indexed time series where the absolute value is growing but changes stay relative
+
+```{r}
+daily_counts %>%
+      index_by(year_month = ~ yearmonth(.)) %>% # monthly aggregates
+  summarise(ttl_count = sum(counts, na.rm = TRUE)) %>%
+  gg_subseries(ttl_count) +
+    ylab("Offense counts") +
+    xlab("Year") +
+    ggtitle("Seasonal subseries plot: # of offenses")
+```
+
+Pull in weather data (TODO: either script or pull fresh from BigQuery, currently separate script)
+
+```{r read weather data}
+daily_weather <- read.csv("weather_day.csv", header=TRUE)
+daily_weather$date <- as.Date(daily_weather$date)
+```
+
+Join the crime and weather data
+```{r join crime and weather data}
+daily_crime <- left_join(daily_counts, daily_weather, by = "date")
+```
+
+```{r scatter plot of crime by precipitation}
+year = 2019
+daily_crime %>%
+  filter(year(date) == year) %>%
+  ggplot(aes(x = temperature, y = counts)) +
+  ylab("Offence counts") + xlab("Temperature (F)") +
+  ggtitle(paste("Correlation of temperature and offense counts in", year, sep=" ")) +
+  geom_smooth(method = "lm") +
+  stat_poly_eq(formula = y ~ x,
+                eq.with.lhs = "italic(hat(y))~`=`~",
+                aes(label = paste(..eq.label.., ..rr.label.., sep = "~~~")), 
+                parse = TRUE) +
+  geom_point() 
+```
+
+In 'normal' years, the number of offenses and temperature are correlated. Temperature explains more than half of the variation in offense counts (i.e., R^2 above 0.5).
+
+```{r plot correlation matrix, message=FALSE, warning=FALSE}
+year = 2019
+daily_crime %>% 
+  filter(year(date) == year) %>%
+  GGally::ggpairs(columns = 2:8)
+# ggsave("counts_by_weather_correlation_matrix.png")
+```
+
+```{r retrieve correlation coefficients}
+counts2019 <- daily_crime %>% 
+  filter(year(date) == 2019)
+cor(counts2019[2:8], use = "pairwise.complete.obs", method = "pearson")
+```
+
+### Exploring lag in data
+
+Each graph shows  y<sub>t</sub> plotted against  y<sub>t−k</sub> for different values of k (here, months).
+
+```{r}
+daily_crime %>% 
+  filter(between(year(date), 2017, 2019)) %>%
+  index_by(year_month = ~ yearmonth(.)) %>% # monthly aggregates
+    summarise(
+      ttl_counts = sum(counts, na.rm = TRUE)
+    ) %>%
+  gg_lag(ttl_counts, geom="point") +
+  ggtitle("Lag plot: Monthly counts versus counts + lag")
+```
+
+## Autocorrelation
+
+Correlation measures the extent of a linear relationship between two variables. Autocorrelation measures the linear relationship between lagged values of a time series. The autocorrelation coefficients make up the autocorrelation function or ACF.
+In simple words: how do counts between months correlate?
 
 
+```{r autocorrelation}
+daily_crime %>% 
+  index_by(year_month = ~ yearmonth(.)) %>% # monthly aggregates
+    summarise(
+      ttl_counts = sum(counts, na.rm = TRUE)
+    ) %>%
+  ACF(ttl_counts, lag_max = 48) %>% autoplot() +
+  ggtitle("Correlogram: Correlation of Monthly count and monthly counts lag-times later")
+```
 
-## arima model
-## use auto.arima to choose ARIMA terms
-fit <- auto.arima(daily_ts)
-## forecast for next 60 time points
-fore <- forecast(fit, h = 60)
-## plot it
-plot(fore)
+The monthly offense counts are strongly autocorrelated. We notice both the seasonal trend and negative trend. Neighboring monthly counts are stronger correlated than those shifted by 6-month. The larger the lag, the weaker the correlation.
+
+### Time Series Decomposition
