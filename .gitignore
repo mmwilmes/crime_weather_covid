@@ -1,6 +1,3 @@
-# Rendered HTML
-*.nb.html
-
 # Credentials
 GC_credentials.txt
 

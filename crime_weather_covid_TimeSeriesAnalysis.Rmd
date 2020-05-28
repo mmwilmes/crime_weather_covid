@@ -150,6 +150,8 @@ daily_counts %>%
     ggtitle("Seasonal subseries plot: # of offenses")
 ```
 
+Above, we are using the total of counts to aggregate the months. That, however, is not optimal. There is a variable number of days per months. Let's account for that and, instead, use the average daily number of offenses per month.
+
 Pull in weather data (TODO: either script or pull fresh from BigQuery, currently separate script)
 
 ```{r read weather data}
@@ -202,10 +204,10 @@ daily_crime %>%
   filter(between(year(date), 2017, 2019)) %>%
   index_by(year_month = ~ yearmonth(.)) %>% # monthly aggregates
     summarise(
-      ttl_counts = sum(counts, na.rm = TRUE)
+      avg_counts = mean(counts, na.rm = TRUE)
     ) %>%
-  gg_lag(ttl_counts, geom="point") +
-  ggtitle("Lag plot: Monthly counts versus counts + lag")
+  gg_lag(avg_counts, geom="point") +
+  ggtitle("Lag plot: Avg daily counts per month versus counts + lag")
 ```
 
 ## Autocorrelation
@@ -218,12 +220,59 @@ In simple words: how do counts between months correlate?
 daily_crime %>% 
   index_by(year_month = ~ yearmonth(.)) %>% # monthly aggregates
     summarise(
-      ttl_counts = sum(counts, na.rm = TRUE)
+      avg_counts = mean(counts, na.rm = TRUE)
     ) %>%
-  ACF(ttl_counts, lag_max = 48) %>% autoplot() +
-  ggtitle("Correlogram: Correlation of Monthly count and monthly counts lag-times later")
+  ACF(avg_counts, lag_max = 48) %>% autoplot() +
+  ggtitle("Correlogram: Correlation of avg daily counts per month and monthly counts lag-times later")
 ```
 
 The monthly offense counts are strongly autocorrelated. We notice both the seasonal trend and negative trend. Neighboring monthly counts are stronger correlated than those shifted by 6-month. The larger the lag, the weaker the correlation.
 
 ### Time Series Decomposition
+
+```{r STL decomposition}
+dcmp <- daily_crime %>%
+    index_by(year_month = ~ yearmonth(.)) %>% # monthly aggregates
+    summarise(
+      avg_counts = mean(counts, na.rm = TRUE)
+    ) %>%
+  model(STL(avg_counts))
+components(dcmp)
+```
+
+```{r autoplot including trend line}
+daily_counts %>%
+  index_by(year_month = ~ yearmonth(.)) %>% # monthly aggregates
+    summarise(
+      avg_counts = mean(counts, na.rm = TRUE)
+    ) %>%
+  autoplot(avg_counts, color='gray') +
+  autolayer(components(dcmp), trend, color='red') +
+  xlab("Year") + ylab("Avg. daily offense counts") +
+  ggtitle("Daily avg offense counts per month and overall trend.")
+```
+The trend-cycle component (red) and the raw data (grey).
+
+
+We can plot all of the components in a single figure using autoplot():
+
+```{r visually parse out components}
+components(dcmp) %>% autoplot() + xlab("Year")
+```
+
+The grey bars to the left of each panel show the relative scales of the components. Each grey bar represents the same length but because the plots are on different scales, the bars vary in size.
+
+We are not interested to understand seasonal changes in offense counts, so let's plot the trend again, but adjust for seasonal effects (i.e., remove seasonal effects). In other words, seasonally adjusted time series contain the remainder component as well as the trend-cycle (but not the seasonal compotent).
+
+## Seasonal adjustment of offense counts
+```{r seasonal adjustment}
+daily_counts %>%
+  index_by(year_month = ~ yearmonth(.)) %>% # monthly aggregates
+    summarise(
+      avg_counts = mean(counts, na.rm = TRUE)
+    ) %>%
+  autoplot(avg_counts, color='gray') +
+  autolayer(components(dcmp), season_adjust, color='blue') +
+  xlab("Year") + ylab("Avg. daily offense counts") +
+  ggtitle("Seasonally adjusted offense counts")
+```

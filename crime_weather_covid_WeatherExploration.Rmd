@@ -132,19 +132,34 @@ daily_weather <- as_tsibble(weather, index = date, regular = TRUE, interval = da
 ```
 
 
-```{r}
+```{r Seasonal plot of precipitation}
 daily_weather %>%
     index_by(year_month = ~ yearmonth(.)) %>% # monthly aggregates
   summarise(
     ttl_prec = sum(precipitation, na.rm = TRUE)
   ) %>%
   gg_subseries(ttl_prec) +
-  ylab("Precipitation (mm)") +
+  ylab("Total Monthly Precipitation (in)") +
   xlab("Month/Year") +
-  ggtitle("Seasonal subseries plot: Monthly precipitation over the years")
+  ggtitle("Seasonal subseries plot: Total monthly precipitation over the years")
+ggsave("SeasonalPlot_Precipitation.png", width = 7, height = 5)
 ```
 
 The blue lines in each panel represents the mean per months (i.e., on average, May is the wettest month). Note that May 2020 is the wettest month in the entire period (since 2001).
+
+```{r Seasonal plot for temperature}
+daily_weather %>%
+    index_by(year_month = ~ yearmonth(.)) %>% # monthly aggregates
+  summarise(
+    avg_temp = mean(temperature, na.rm = TRUE)
+  ) %>%
+  gg_subseries(avg_temp) +
+  ylab("Avg. Daily Temperature (F)") +
+  xlab("Month/Year") +
+  ggtitle("Seasonal subseries plot: Average monthly temperature over the years")
+ggsave("SeasonalPlot_Temperature.png", width = 7, height = 5)
+```
+
 
 ```{r write data to csv}
 write.csv(daily_weather, "weather_day.csv", row.names = FALSE)
