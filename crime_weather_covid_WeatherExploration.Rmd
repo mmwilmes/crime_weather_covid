@@ -6,129 +6,29 @@ output: html_document:
     df_print: paged
 ---
 
-```{r Markdown cheatsheet, echo=FALSE}
-# echo=FALSE prevents code, but not the results from appearing in the rendered file
-# eval=TRUE evaluates the code and includes the results
-# results='hide' hides the results but displays the code
+## TODO
+# source the ReadData or read the csv
+Pull in weather data (TODO: either script or pull fresh from BigQuery, currently separate script)
+
+```{r read weather data}
+daily_weather <- read.csv("crime_weather_day.csv")
+daily_weather$date <- as.Date(daily_weather$date)
+# transform into tsibble
+daily_weather <- as_tsibble(daily_weather, index=date) %>% arrange(date)
 ```
-
-
-### Install packages (if required)
-
-```{r install packages, eval=FALSE} 
-# set eval=TRUE if running script for the first time
-if(!require("ggseas")) install.packages("ggseas")
-if(!require("forecast")) install.packages("forecast")
-if(!require("data.table")) install.packages("data.table")
-if(!require("knitr")) install.packages("knitr")
-if(!require("bigrquery")) install.packages("bigrquery")
-if(!require("devtools")) install.packages("devtools") 
-if(!require("tsibble")) install.packages("tsibble")
-if(!require("fable")) install.packages("fable")  # forecasting package of the tidyverse family
-# devtools::install_github("rstats-db/bigrquery", force = TRUE)
-```
-
-### Load packages
-
-```{r eval=TRUE, results='hide'}
-library(bigrquery)
-library(ggplot2)
-library(tidyr)
-library(dplyr)
-library(lubridate) # handle date information
-library(readr) # read txt file with credentials
-library(fable)
-library(tsibble)
-library(feasts)
-```
-
-### Retrieve Google Cloud credentials
-Retrieve Google Cloud project ID, which I store in an external file (not uploaded to github).
-```{r set up credentials, }
-# Set Google Cloud project ID here
-project_name <- read_file("./GC_credentials.txt")
-```
-
-
-I used the BigQuery online UI to explore available stations. Most stations have a restricted runtime. That means no single station in Chicago ran the entire time period for which we have crime information (01-01-2001 to today).
-
-First, I explored the 'stations' table and realized that multiple stations report weather data for the city Chicago. We can create a geographical quadrant (using lon/lat to select all stations that report data for our crime area.)
-
-SELECT usaf
-FROM bigquery-public-data.noaa_gsod.stations
-WHERE state='IL' AND (`lat` BETWEEN 41.6 AND 42) AND (`lon` BETWEEN -88 AND -87)
-  AND `end` > '20010000'
-ORDER BY `end` ASC;
-
-Eventually, I identified the station named "Chicago" (usaf = '997338') as the station with the longest period of continous weather data (20080101 to last full week from today). The station "CHICAGO/MEIGS" (usaf = '725346') reports data from 19730101 to 20080618 and is, hence, useful to fill in the data from 2001 to 2007.
-
-
-## Retrieve weather data with date information
-```{r setup request}
-sql <- "
-#standardsql
-SELECT
-  -- Create a timestamp from the date components.
-  timestamp(concat(year,'-',mo,'-',da)) as date,
-  -- Replace numerical null values with actual nulls
-  ROUND(AVG(IF (temp=9999.9, null, temp)),2) AS temperature,
-  ROUND(AVG(IF (visib=999.9, null, visib)),2) AS visibility,
-  ROUND(AVG(IF (wdsp='999.9', null, CAST(wdsp AS Float64))),2) AS wind_speed,
-  ROUND(AVG(IF (gust=999.9, null, gust)),2) AS wind_gust,
-  ROUND(AVG(IF (prcp=99.99, null, prcp)),3) AS precipitation,
-  AVG(IF (sndp=999.9, null, sndp)) AS snow_depth
-FROM
-  `bigquery-public-data.noaa_gsod.gsod*`
-WHERE
-   `stn` IN 
-  (SELECT `usaf`
-    FROM bigquery-public-data.noaa_gsod.stations
-    WHERE state='IL' AND (`lat` BETWEEN 41.6 AND 42) AND (`lon` BETWEEN -88 AND -87)
-      AND `end` > '20010000'
-    ORDER BY `end` ASC) AND CAST(YEAR AS INT64) > 2000
- GROUP BY date;
-"
-```
-
-
-TODO: Cache locally and only fetch additional (recent) data.
-
-```{r execute SQL call}
-# Execute the query and store the result
-weather <- query_exec(sql, project = project_name, use_legacy_sql = FALSE, max_pages = Inf)
-weather <- arrange(weather, weather$date)
-str(weather)
-```
-
-How many days of data do we expect?
-```{r}
-max(weather$date) - min(weather$date)
-# as.Date("2001-01-01", format="%Y-%m-%d") - as.Date("2020-05-13", format="%Y-%m-%d")
-```
-
-Only using data from all stations across Chicago, ensures that we have no gaps in the data. The SQL query above averages across stations per day.
-
-However, we have one more row than expeted. TODO
 
 
 ```{r plot temperature over time}
-weather %>% 
+daily_weather %>% 
   mutate(diff = date - lag(date)) %>%
   ggplot(aes(date, temperature)) + geom_line()
 ```
 
 
 ```{r plot snow depth over time}
-weather %>% 
+daily_weather %>% 
   mutate(diff = date - lag(date)) %>%
   ggplot(aes(date, snow_depth)) + geom_point()
-```
-
-Turn data frame into a tsibble for easier plotting.
-
-```{r transform into tsibble}
-weather$date <- as.Date(weather$date)
-daily_weather <- as_tsibble(weather, index = date, regular = TRUE, interval = day)
 ```
 
 
@@ -142,10 +42,10 @@ daily_weather %>%
   ylab("Total Monthly Precipitation (in)") +
   xlab("Month/Year") +
   ggtitle("Seasonal subseries plot: Total monthly precipitation over the years")
-ggsave("SeasonalPlot_Precipitation.png", width = 7, height = 5)
+ggsave("./img/SeasonalPlot_Precipitation.png", width = 7, height = 5)
 ```
 
-The blue lines in each panel represents the mean per months (i.e., on average, May is the wettest month). Note that May 2020 is the wettest month in the entire period (since 2001).
+The blue lines in each panel represents the mean per months (i.e., on average, May is the wettest month).
 
 ```{r Seasonal plot for temperature}
 daily_weather %>%
@@ -157,10 +57,5 @@ daily_weather %>%
   ylab("Avg. Daily Temperature (F)") +
   xlab("Month/Year") +
   ggtitle("Seasonal subseries plot: Average monthly temperature over the years")
-ggsave("SeasonalPlot_Temperature.png", width = 7, height = 5)
-```
-
-
-```{r write data to csv}
-write.csv(daily_weather, "weather_day.csv", row.names = FALSE)
+ggsave(",/img/SeasonalPlot_Temperature.png", width = 7, height = 5)
 ```

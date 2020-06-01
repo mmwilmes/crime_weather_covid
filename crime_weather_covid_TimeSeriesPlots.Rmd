@@ -41,38 +41,9 @@ library(feasts)
 library(ggpmisc) # plot R^2 in scatter plot
 ```
 
-### Retrieve Google Cloud credentials
-Retrieve Google Cloud project ID, which I store in an external file (not uploaded to github).
-```{r set up credentials, eval = FALSE}
-# Set Google Cloud project ID here
-project_name <- read_file("./GC_credentials.txt")
-```
+## TODO
+# source readData or read from csv below
 
-
-### Retrieve data with date information
-
-```{r setup request, eval = FALSE, echo = FALSE, message=FALSE, warning=FALSE}
-sql <- "
-SELECT 
-  iucr,
-  primary_type,
-  description, 
-  date
-FROM `bigquery-public-data.chicago_crime.crime` 
-"
-```
-
-TODO: Cache locally and only fetch additional (recent) data.
-
-```{r execute SQL call, eval = FALSE, echo = FALSE}
-# Execute the query and store the result
-counts_day <- query_exec(sql, project = project_name, use_legacy_sql = FALSE, max_pages = Inf)
-str(counts_day)
-```
-
-```{r write out csv, eval = FALSE, echo = FALSE}
-write.csv(counts_day, "counts_day.csv", row.names = FALSE)
-```
 
 ```{r read in data from csv}
 counts_day <- read.csv("counts_day.csv")
@@ -80,35 +51,6 @@ head(counts_day)
 # format as date
 counts_day$date <- as.Date(ymd_hms(counts_day$date))
 head(counts_day)
-```
-
-
-In the dataframe, each row stands for one offense of a particular type, at a particular time. We add a column of "counts", that for now is always one. This fascilitates summing up rows (e.g., by day) later on.
-```{r add colum of ones --> one row is one offense count}
-counts_day$count <- rep(1,nrow(counts_day))
-# sort by ascending date
-counts_day <- counts_day %>% arrange(date)
-```
-
-```{r aggregate counts per day}
-# group by day (across offense types)
-counts_day <- tibble(counts_day)
-
-daily_counts <- counts_day %>%
-  group_by(date) %>%
-  summarize(counts = sum(count))
-head(daily_counts)
-```
-
-### tsibble: time-sensitive tibble
-1. Index is a variable with inherent ordering from past to present.
-2. Key is a set of variables that define observational units over time.
-3. Each observation should be uniquely identified by index and key.
-4. Each observational unit should be measured at a common interval, if regularly spaced.
-```{r time-aware tibble}
-# turn into time-sensitive tibble
-# works like a normal tibble but tracks time (set by index)
-daily_counts <- as_tsibble(daily_counts, index=date) %>% arrange(date)
 ```
 
 
@@ -150,19 +92,8 @@ daily_counts %>%
     ggtitle("Seasonal subseries plot: # of offenses")
 ```
 
-Above, we are using the total of counts to aggregate the months. That, however, is not optimal. There is a variable number of days per months. Let's account for that and, instead, use the average daily number of offenses per month.
+Above, we are using the total of counts to aggregate the months. That, however, is not optimal. There is a variable number of days per months. Let's account for that. Moving forward, we use the average daily number of offenses per month.
 
-Pull in weather data (TODO: either script or pull fresh from BigQuery, currently separate script)
-
-```{r read weather data}
-daily_weather <- read.csv("weather_day.csv", header=TRUE)
-daily_weather$date <- as.Date(daily_weather$date)
-```
-
-Join the crime and weather data
-```{r join crime and weather data}
-daily_crime <- left_join(daily_counts, daily_weather, by = "date")
-```
 
 ```{r scatter plot of crime by precipitation}
 year = 2019
