@@ -38,8 +38,7 @@ library(lubridate) # handle date information
 library(readr) # read txt file with credentials
 library(fable)
 library(tsibble)
-library(feasts)
-library(ggpmisc) # plot R^2 in scatter plot
+library(feasts) # stands for: Feature Extraction And Statistics for Time Series
 ```
 
 ## TODO --> source the ReadData or read the csv
@@ -50,53 +49,128 @@ head(counts_day)
 # format as date
 counts_day$date <- as.Date(counts_day$date)
 head(counts_day)
+# transform into tsibble
+daily_counts <- as_tsibble(counts_day, index=date) %>% arrange(date)
 ```
 
-### Time Series Decomposition
 
-```{r STL decomposition}
-dcmp <- daily_crime %>%
-    index_by(year_month = ~ yearmonth(.)) %>% # monthly aggregates
+```{r calculate avg daily counts per month}
+avg_daily_counts <- daily_counts %>%
+  index_by(year_month = ~ yearmonth(.)) %>% # monthly aggregates
     summarise(
       avg_counts = mean(counts, na.rm = TRUE)
-    ) %>%
+    )
+```
+
+# Time Series Decomposition
+
+## Sliding window analysis
+
+Moving averages is a classical method for time series decomposition. We have better methods today, but understanding these classic methods is crucial to understanding the more advanced approaches. 
+
+The below implementation of a sliding window analysis (`slide_dbl`) calculates the average of the observations in a 5 month-window, centred on the corresponding month. Observations that are nearby in time are likely to be close in value. Calculating the average, hence, eliminates some of the randomness in the data, leaving a smooth trend-cycle component.
+
+```{r calculate moving average over 5 months)}
+moving_avg <- avg_daily_counts %>%
+  mutate(
+    `5-MA` = slide_dbl(avg_counts, mean, .size = 5, .align = "center")
+  )
+
+# plot
+moving_avg %>%
+  autoplot(avg_counts) +
+  autolayer(moving_avg, `5-MA` , color='red') +
+  xlab("Year") + ylab("Daily avg offense counts") +
+  ggtitle("Avg daily offense counts with moving monthly average") +
+  guides(colour=guide_legend(title="series"))
+
+```
+
+Notice that the trend-cycle (in red) is smoother than the original data and captures the main movement of the time series without all of the minor fluctuations. The order of the moving average (we used 5 above) determines the smoothness of the trend-cycle estimate. A larger order means a smoother curve (i.e., the moving window is larger and we use more values to calculate the mean). 
+
+As we can see above, a moving average of order 5 does not eliminate the seasonality in the data (as the seasonal cycle spans 12 months, not 5).
+
+To "eliminate" the seasonal portion entirely, we need an order 12 moving average (12-MA). However, the order of a moving average needs to be odd, so we can center it. The solution is to calculate a moving average over 12 months (12-MA), and then calculate the average of each of two values (2x12-MA). This approach is called weighted moving average.
+
+```{r calculate weighted moving average)}
+moving_avg <- avg_daily_counts %>%
+  mutate(
+    # calculate an order 12 moving average (i.e., moving mean over 12 months)
+    `12-MA` = slide_dbl(avg_counts, mean, .size = 12, .align = "center-right"),
+    # calculate an order 2 moving average from the 12-MA series
+    `2x12-MA` = slide_dbl(`12-MA`, mean, .size = 2, .align = "center-left")
+  )
+
+# plot
+moving_avg %>%
+  autoplot(avg_counts) +
+  autolayer(moving_avg, vars(`2x12-MA`), color='red') +
+  xlab("Year") + ylab("Monthly offense counts") +
+  ggtitle("Avg daily offense counts with weighted moving average") +
+  guides(colour=guide_legend(title="series"))
+```
+Notice that the red line of the trend-cycle shows no seasonality (i.e., the seasonal component has been eliminated from the data using the weighted moving average.)
+
+
+## Seasonal and Trend decomposition using Loess (STL)
+
+- STL handles any type of seasonality (not only monthly and quarterly data such as X11 and SEATS)
+- Model handles seasonal changes over time 
+  -- rate of change can be controlled by the user --> smaller [odd!] window size --> allows more rapid chang
+  -- season window is the number of consecutive years to be used in estimating each value in the seasonal component)
+  -- Setting the seasonal window to be infinite is equivalent to forcing the seasonal component to be periodic season(window='periodic')(i.e., identical across years)
+- Smoothness of the trend-cycle can be controlled by the user (i.e., trend window is the number of consecutive observations to be used when estimating the trend-cycle)
+- choose cycles automatically by setting `season(window=13)` and the trend window chosen automatically from the seasonal period. The default setting for monthly data is `trend(window=21)` --> balance overfitting vs. allow seasonally change over time
+- (Mostly) Robust to outliers (choose `robust = TRUE` option)
+- additive decomposition only (or first take log of data and retransform the components)
+- alternatively use Box-Cox transformation with 0 < λ < 1, i.e.. a value of  λ = 0 --> multiplicative decompositon, while  λ = 1 --> additive decomposition)
+
+```{r STL decomposition with default options}
+dcmp <- avg_daily_counts %>%
+  # auto-select the parameters in the model for seasonality and trend
   model(STL(avg_counts))
 components(dcmp)
 ```
 
-```{r autoplot including trend line}
-daily_counts %>%
-  index_by(year_month = ~ yearmonth(.)) %>% # monthly aggregates
-    summarise(
-      avg_counts = mean(counts, na.rm = TRUE)
-    ) %>%
-  autoplot(avg_counts, color='gray') +
-  autolayer(components(dcmp), trend, color='red') +
-  xlab("Year") + ylab("Avg. daily offense counts") +
-  ggtitle("Daily avg offense counts per month and overall trend.")
-```
-The trend-cycle component (red) and the raw data (grey).
-
-
-We can plot all of the components in a single figure using autoplot():
+For a visual inspection of all components we can plot them in a single figure using `autoplot()`:
 
 ```{r visually parse out components}
 components(dcmp) %>% autoplot() + xlab("Year")
 ```
-
 The grey bars to the left of each panel show the relative scales of the components. Each grey bar represents the same length but because the plots are on different scales, the bars vary in size.
+
+## Visualize the variation in the seasonal component over time.
+
+```{r Seasonal sub-series plot of the seasonal component of STL model}
+components(dcmp) %>% gg_subseries(season_year)
+```
+While colder months became more dangerous over time, the hotter months became safer.
+
+
+
+
+```{r STL decomposition with adjusted settings}
+dcmp <- avg_daily_counts %>%
+  model(STL(avg_counts ~ trend(window=7) + season(window='periodic'),
+    robust = TRUE))
+components(dcmp) %>% autoplot()
+```
 
 We are not interested to understand seasonal changes in offense counts, so let's plot the trend again, but adjust for seasonal effects (i.e., remove seasonal effects). In other words, seasonally adjusted time series contain the remainder component as well as the trend-cycle (but not the seasonal compotent).
 
-## Seasonal adjustment of offense counts
-```{r seasonal adjustment}
-daily_counts %>%
-  index_by(year_month = ~ yearmonth(.)) %>% # monthly aggregates
-    summarise(
-      avg_counts = mean(counts, na.rm = TRUE)
-    ) %>%
+```{r autoplot including seasonal adjusted data}
+avg_daily_counts %>%
   autoplot(avg_counts, color='gray') +
+  # add trend
+  autolayer(components(dcmp), trend, color='red') +
+  # add seasonally adjusted trend
   autolayer(components(dcmp), season_adjust, color='blue') +
-  xlab("Year") + ylab("Avg. daily offense counts") +
-  ggtitle("Seasonally adjusted offense counts")
+   labs(title = "Avg daily offense counts per month",
+           subtitle = "Data = gray, Trend-cycle = red, Seasonally-adjusted data = blue",
+           y = "Avg. daily offense counts",
+           x = "Year") 
 ```
+
+
+
+
