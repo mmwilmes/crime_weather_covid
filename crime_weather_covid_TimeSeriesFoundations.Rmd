@@ -4,12 +4,16 @@ output:
   html_document:
     df_print: paged
 ---
+
 ```{r Markdown cheatsheet, echo=FALSE}
 # echo=FALSE prevents code, but not the results from appearing in the rendered file
 # eval=TRUE evaluates the code and includes the results
 # results='hide' hides the results but displays the code
 ```
 
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
 
 ### Install packages (if required)
 

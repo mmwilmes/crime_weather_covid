@@ -1,0 +1,54 @@
+---
+title: "crime_weather_covid_PCA"
+author: "Madlen Wilmes"
+date: "6/5/2020"
+output: html_document
+---
+
+```{r Markdown cheatsheet, echo=FALSE}
+# echo=FALSE prevents code, but not the results from appearing in the rendered file
+# eval=TRUE evaluates the code and includes the results
+# results='hide' hides the results but displays the code
+```
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+### Load packages
+
+```{r eval=TRUE, message=FALSE, warning=FALSE}
+library(bigrquery)
+library(ggplot2)
+library(tidyr)
+library(dplyr)
+library(lubridate) # handle date information
+library(readr) # read txt file with credentials
+library(fable)
+library(tsibble)
+library(feasts) # stands for: Feature Extraction And Statistics for Time Series
+```
+
+
+### Retrieve Data from BigQuery
+```{r get crime data}
+source("crime_weather_covid_ReadData.R")
+# daily_counts <- get_crime_per_day()
+daily_counts_per_type <- get_crime_counts_per_type_and_day()
+daily_weather <- get_weather_data()
+```
+
+```{r join and save} 
+  daily_crime_weather_per_type <- left_join(daily_counts_per_type, daily_weather, by = "date")
+  write.csv(daily_crime_weather_per_type, "crime_weather_day_per_type.csv", row.names = FALSE)
+```
+
+## Read csv, if you've aleady retrieved data today
+```{r read csv with crime and weather per type and day}
+daily_counts_weather <- read.csv("crime_weather_day_per_type.csv")
+daily_counts_weather$date <- as.Date(daily_counts_weather$date)
+daily_counts_weather2 <- as_tsibble(daily_counts_weather, index=date, key=iucr) %>% arrange(date)
+```
+
+
+

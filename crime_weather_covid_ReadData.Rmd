@@ -5,7 +5,11 @@ date: "6/1/2020"
 output: html_document
 ---
 
-```{r Markdown cheatsheet, echo=FALSE}
+```{r setup, include=FALSE, purl=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r Markdown cheatsheet, echo=FALSE, purl=FALSE}
 # echo=FALSE prevents code, but not the results from appearing in the rendered file
 # eval=TRUE evaluates the code and includes the results
 # results='hide' hides the results but displays the code
@@ -24,7 +28,6 @@ if(!require("devtools")) install.packages("devtools")
 if(!require("bigrquery")) install.packages("bigrquery")
 if(!require("tsibble")) install.packages("tsibble")
 if(!require("fable")) install.packages("fable")  # forecasting package of the tidyverse family
-# devtools::install_github("rstats-db/bigrquery", force = TRUE)
 ```
 
 ### Load packages
@@ -44,55 +47,75 @@ library(ggpmisc) # plot R^2 in scatter plot
 
 ### Retrieve Google Cloud credentials
 Retrieve Google Cloud project ID, which I store in an external file (not uploaded to github).
-```{r set up credentials, eval = FALSE}
+```{r set up credentials, eval = TRUE}
 # Set Google Cloud project ID here
-project_name <- read_file("./GC_credentials.txt")
+read_creds <- function(){
+    project_name <- read_file("./GC_credentials.txt")
+    return(project_name)
+}
 ```
 
 
 ### Retrieve data with date information
 
-```{r setup request, eval = FALSE, echo = FALSE, message=FALSE, warning=FALSE}
-sql <- "
-SELECT 
-  iucr,
-  primary_type,
-  description, 
-  date
-FROM `bigquery-public-data.chicago_crime.crime` 
-"
+```{r setup crime data request, eval = TRUE, echo = FALSE, message=FALSE, warning=FALSE}
+build_crime_SQL_query <- function(){
+  sql <- "SELECT iucr, primary_type, description, date FROM `bigquery-public-data.chicago_crime.crime`"
+  return(sql)
+}
 ```
 
 TODO: Cache locally and only fetch additional (recent) data.
 
-```{r execute SQL call, eval = FALSE, echo = FALSE}
 # Execute the query and store the result
-counts_day <- query_exec(sql, project = project_name, use_legacy_sql = FALSE, max_pages = Inf)
-str(counts_day)
+```{r execute SQL call for crime data}
+get_crime_data <- function(){
+  billing <- read_creds()
+  sql <- build_crime_SQL_query()
+  tb <- bq_project_query(billing, sql)
+  counts_day <- bq_table_download(tb, max_results = Inf)
+  return(counts_day)
+}
 ```
 
 Each row in the data stands for one offense of a particular type, at a particular time. We add a column of "counts", that for now is always one. This fascilitates summing up rows (e.g., by day) later on.
 ```{r add colum of ones --> one row is one offense count}
-counts_day$count <- rep(1,nrow(counts_day))
-# format as date (and drop the time part)
-counts_day$date <- as.Date(ymd_hms(counts_day$date))
-
-# sort by ascending date
-counts_day <- counts_day %>% arrange(date)
+crime_data_processing <- function(counts_day){
+  counts_day$count <- rep(1, nrow(counts_day))
+  # format as date (and drop the time part)
+  counts_day$date <- as.Date(ymd_hms(counts_day$date))
+  # sort by ascending date
+  counts_day <- counts_day %>% arrange(date)
+  return(counts_day)
+}
 ```
 
 ```{r aggregate counts per day}
-# group by day (across offense types)
-counts_day <- tibble(counts_day)
+aggregate_crime_counts_per_day <- function(counts_day){
+  # group by day (across offense types)
+  counts_day <- tibble(counts_day)
 
-daily_counts <- counts_day %>%
+  daily_counts <- counts_day %>%
   group_by(date) %>%
   summarize(counts = sum(count))
-head(daily_counts)
+  return(daily_counts)
+}
+```
+
+```{r aggregate counts per offense and day}
+aggregate_crime_counts_per_offence_and_day <- function(counts_day){
+  # group by day (across offense types)
+  counts_day <- tibble(counts_day)
+
+  daily_counts <- counts_day %>%
+  group_by(date, iucr) %>%
+  summarize(counts = sum(count))
+  return(daily_counts)
+}
 ```
 
 The sum of all days should be equal to the initial number of rows of data (i.e., we didn't loose any information in the above data transformation)
-```{r sanitiy check}
+```{r sanitiy check, purl=FALSE}
 sum(daily_counts$counts) == nrow(counts_day)
 ```
 
@@ -101,12 +124,32 @@ sum(daily_counts$counts) == nrow(counts_day)
 2. Key is a set of variables that define observational units over time.
 3. Each observation should be uniquely identified by index and key.
 4. Each observational unit should be measured at a common interval, if regularly spaced.
-```{r time-aware tibble}
+```{r time-aware tibble, purl=FALSE}
 # turn into time-sensitive tibble
 # works like a normal tibble but tracks time (set by index)
 daily_counts <- as_tsibble(daily_counts, index=date) %>% arrange(date)
 ```
 
+
+```{r main function to get total crime data per day}
+get_crime_per_day <- function(){
+  counts_day <- get_crime_data()
+  counts_day <- crime_data_processing(counts_day)
+  daily_counts_per_day <- aggregate_crime_counts_per_day(counts_day)
+  daily_counts_counts_per_day <- as_tsibble(daily_counts_per_day, index=date) %>% arrange(date)
+  return(daily_counts_per_day)
+}
+```
+
+```{r main function to get crime data per offense type and day}
+get_crime_counts_per_type_and_day <- function(){
+  counts_day <- get_crime_data()
+  counts_day <- crime_data_processing(counts_day)
+  daily_counts_per_type_day <- aggregate_crime_counts_per_offence_and_day(counts_day)
+  daily_counts_per_type_day  <- as_tsibble(daily_counts_per_type_day , index=date, key=iucr) %>% arrange(date)
+  return(daily_counts_per_type_day)
+}
+```
 
 ## Retrieve the weather data
 
@@ -124,7 +167,8 @@ Eventually, I identified the station named "Chicago" (usaf = '997338') as the st
 
 
 ## Retrieve weather data with date information
-```{r setup request}
+```{r setup weather request}
+build_weather_sql <- function(){
 sql <- "
 #standardsql
 SELECT
@@ -148,20 +192,27 @@ WHERE
     ORDER BY `end` ASC) AND CAST(YEAR AS INT64) > 2000
  GROUP BY date;
 "
+}
 ```
 
 
 TODO: Cache locally and only fetch additional (recent) data.
 
-```{r execute SQL call}
+```{r execute weather SQL call}
 # Execute the query and store the result
-weather <- query_exec(sql, project = project_name, use_legacy_sql = FALSE, max_pages = Inf)
-weather <- arrange(weather, weather$date)
-str(weather)
+fetch_weather_data <- function(){
+  sql <- build_weather_sql()
+  billing <- read_creds()
+  tb <- bq_project_query(billing, sql)
+  weather <- bq_table_download(tb, max_results = Inf)
+  weather <- arrange(weather, weather$date)
+  return(weather)
+}
 ```
 
+
 How many days of data do we expect?
-```{r}
+```{r get nb of days, purl=FALSE}
 max(weather$date) - min(weather$date)
 # as.Date("2001-01-01", format="%Y-%m-%d") - as.Date("2020-05-13", format="%Y-%m-%d")
 ```
@@ -174,16 +225,25 @@ However, we have one more row than expeted. TODO
 Turn data frame into a tsibble.
 
 ```{r transform into tsibble}
-weather$date <- as.Date(weather$date)
-daily_weather <- as_tsibble(weather, index = date, regular = TRUE, interval = day)
+weather_processing <- function(weather){
+  weather$date <- as.Date(weather$date)
+  daily_weather <- as_tsibble(weather, index = date, regular = TRUE, interval = day)
+  return(daily_weather)
+}
 ```
 
-#  Join the crime and weather data
-```{r join crime and weather data}
-daily_crime_weather<- left_join(daily_counts, daily_weather, by = "date")
+
+```{r main function to get weather data}
+get_weather_data <- function(){
+  weather <- fetch_weather_data()
+  daily_weather <- weather_processing(weather)
+  return(daily_weather)
+}
 ```
 
 
-```{r write data to csv}
-write.csv(daily_crime_weather, "crime_weather_day.csv", row.names = FALSE)
+```{r produce an R script form this file that can be sourced elsewhere, purl=FALSE}
+# remember to set option purl=FALSE in those chunks above, 
+# that you don't want included in R script
+knitr::purl("crime_weather_covid_ReadData.Rmd")
 ```
