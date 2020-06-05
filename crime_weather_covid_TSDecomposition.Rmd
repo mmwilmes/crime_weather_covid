@@ -56,7 +56,7 @@ daily_counts <- as_tsibble(counts_day, index=date) %>% arrange(date)
 
 ```{r calculate avg daily counts per month}
 avg_daily_counts <- daily_counts %>%
-  index_by(year_month = ~ yearmonth(.)) %>% # monthly aggregates
+  index_by(year_month = ~ yearmonth(.)) %>% # aggregate daily averages by month
     summarise(
       avg_counts = mean(counts, na.rm = TRUE)
     )

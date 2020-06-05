@@ -1,0 +1,112 @@
+---
+title: "TimeSeriesFeatures"
+author: "Madlen Wilmes"
+date: "6/4/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Time Series Features
+
+Any number or vector that can be computed from a time series, is a feature of that time series. In other terms, features are numerical summaries that are useful to describe/explore time series. Some examples:
+- mean, min, or max
+- autocorrelation
+- Guerrero estimate of Box-Cox Transformation
+
+
+```{r Markdown cheatsheet, echo=FALSE}
+# echo=FALSE prevents code, but not the results from appearing in the rendered file
+# eval=TRUE evaluates the code and includes the results
+# results='hide' hides the results but displays the code
+```
+
+### Load packages
+
+```{r eval=TRUE, message=FALSE, warning=FALSE}
+library(bigrquery)
+library(ggplot2)
+library(tidyr)
+library(dplyr)
+library(lubridate) # handle date information
+library(readr) # read txt file with credentials
+library(fable)
+library(tsibble)
+library(feasts) # stands for: Feature Extraction And Statistics for Time Series
+```
+
+## TODO --> source the ReadData or read the csv
+
+```{r read in data from csv}
+counts_day <- read.csv("crime_weather_day.csv")
+head(counts_day)
+# format as date
+counts_day$date <- as.Date(counts_day$date)
+head(counts_day)
+# transform into tsibble
+daily_counts <- as_tsibble(counts_day, index=date) %>% arrange(date)
+```
+
+
+```{r calculate avg daily counts per month}
+avg_daily_counts <- daily_counts %>%
+  index_by(year_month = ~ yearmonth(.)) %>% # aggregate daily averages by month
+    summarise(
+      avg_counts = mean(counts, na.rm = TRUE)
+    )
+```
+
+```{r calculate features}
+# mean of monthly aggregated avg daily counts
+avg_daily_counts %>% features(avg_counts, mean)
+# quantiles -> numerical equivalent of box-plot (min, lower quartile, median, upper quartile, max)
+avg_daily_counts %>% features(avg_counts, quantile, prob=seq(0,1, by=0.25))
+```
+
+## Autocorrelation-based features
+
+Reminder: autocorrelation measures the linear relationship between lagged values of a time series.
+
+The `feat_acf()` function computes a selection of features derived from autocorrelations:
+
+- first autocorrelation coefficient from the original data (detect non-randomness, if data with lag one is similar, they are autocorrelated);
+- sum of square of the first ten autocorrelation coefficients from the original data (how much do coefficients vary around their mean --> extend of autocorrelation; how much autocorrelation there is in a series, regardless of lag)
+- first autocorrelation coefficient from the differenced data;
+- sum of square of the first ten autocorrelation coefficients from the differenced data;
+- first autocorrelation coefficient from the twice differenced data;
+- sum of square of the first ten autocorrelation coefficients from the twice differenced data;
+- If seasonal data, also returns the autocorrelation coefficient at the first seasonal lag (i.e., how series changes between years, rather than between months)
+
+```{r calculate acf features}
+avg_daily_counts %>% features(avg_counts, feat_acf)
+```
+
+## STL decomposition-based features
+
+Recap: data = trend + seasonal + remainder component
+
+If there is a strong trend in the data, the coefficient of var(remainder) / var(trend + remainder) should be small. 
+If there is a weak or no trend, the coefficient is large.
+We can express the coefficient as a number between 0 and 1 to derive a measure of the "strenght of trend". Here's how to calculate it (and other features):
+
+```{r calculate stl features}
+avg_daily_counts %>% features(avg_counts, feat_stl)
+```
+
+The function `feat_stl` gives us a number of additional insight.
+
+The strength of seasonality is defined similar to the coefficient above, but with respect to the detrended data (instead of the seasonally adjusted data) --> var(remainder) / var(seasonal + remainder). This coefficient is indicated by `seasonal_strength_year`. If it is close to zero, there's not much seasonal trend in the data. 
+
+`seasonal_peak_year` tells us that month number 7 (July) has the peak (i.e., largest avg daily offenses). Similarily, `seasonal_trough_year` tells us that February has the lowest avg daily offenses. 
+
+`spikiness` refers to the spikes in the remainder component (variance of the leave-one-out variances).
+
+`stl_e_acf1` is the first autocorrelation coefficient of the remainder series (the smaller, the more random the remainder... we want to explain most by trend and seasonality and make remainder truly random)
+
+`stl_e_acf10` is the sum of squares of the first ten autocorrelation coefficients of the remainder series; the smaller, the better, we do not want to see residual seasonality in the remainder (then we didn't do a good job with our model)
+
+```{r calculate stl features with options}
+feat_stl(avg_daily_counts$avg_counts, .period = 12, s.window = 7)
+```
