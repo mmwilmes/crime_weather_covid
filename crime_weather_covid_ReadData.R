@@ -1,5 +1,6 @@
 ## ----install packages, eval=FALSE, message=FALSE, warning=FALSE---------------------------------------------------
 ## # set eval=TRUE if running script for the first time
+## if(!require("dplyr")) install.packages("dplyr")
 ## if(!require("ggseas")) install.packages("ggseas")
 ## if(!require("forecast")) install.packages("forecast")
 ## if(!require("data.table")) install.packages("data.table")
@@ -11,10 +12,10 @@
 
 
 ## ----eval=TRUE, message=FALSE, warning=FALSE----------------------------------------------------------------------
+library(dplyr)
 library(bigrquery)
 library(ggplot2)
 library(tidyr)
-library(dplyr)
 library(lubridate) # handle date information
 library(readr) # read txt file with credentials
 library(fable)
@@ -73,11 +74,9 @@ aggregate_crime_counts_per_day <- function(counts_day){
 
 ## ----aggregate counts per offense and day-------------------------------------------------------------------------
 aggregate_crime_counts_per_offence_and_day <- function(counts_day){
-  # group by day (across offense types)
-  counts_day <- tibble(counts_day)
-
   daily_counts <- counts_day %>%
-  group_by(date, iucr) %>%
+  # TODO --> more distinct descriptions than iucr, not sure what's kept in this step
+  group_by(date, iucr, primary_type, description) %>%
   summarize(counts = sum(count))
   return(daily_counts)
 }
@@ -90,7 +89,9 @@ aggregate_crime_counts_per_offence_and_day <- function(counts_day){
 ## ----main function to get total crime data per day----------------------------------------------------------------
 get_crime_per_day <- function(){
   counts_day <- get_crime_data()
+  print("Started data processing")
   counts_day <- crime_data_processing(counts_day)
+  print("Aggregating now by day")
   daily_counts_per_day <- aggregate_crime_counts_per_day(counts_day)
   daily_counts_counts_per_day <- as_tsibble(daily_counts_per_day, index=date) %>% arrange(date)
   return(daily_counts_per_day)
@@ -100,9 +101,11 @@ get_crime_per_day <- function(){
 ## ----main function to get crime data per offense type and day-----------------------------------------------------
 get_crime_counts_per_type_and_day <- function(){
   counts_day <- get_crime_data()
+  print("Started data processing")
   counts_day <- crime_data_processing(counts_day)
+  print("Aggregating now by day and offense type")
   daily_counts_per_type_day <- aggregate_crime_counts_per_offence_and_day(counts_day)
-  daily_counts_per_type_day  <- as_tsibble(daily_counts_per_type_day , index=date, key=iucr) %>% arrange(date)
+  daily_counts_per_type_day  <- as_tsibble(daily_counts_per_type_day , index=date, key=c(iucr, primary_type, description))
   return(daily_counts_per_type_day)
 }
 
