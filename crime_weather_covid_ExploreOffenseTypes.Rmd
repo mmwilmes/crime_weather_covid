@@ -92,3 +92,13 @@ filter(every_day_offenses, .gaps == TRUE)
 ```{r example visualization of particular offense type}
 daily_counts_per_type %>% filter(iucr == '0560') %>% filter_index("2015-01-01" ~ .) %>% autoplot(counts)
 ```
+
+```{r monthly averages}
+daily_counts_per_type %>% 
+    filter_index("2018-01-01" ~ .) %>% 
+    filter(iucr == '0560') %>% 
+    index_by(year_month = ~ yearmonth(.)) %>% # monthly aggregates
+      summarise(avg_counts = mean(counts, na.rm = TRUE)) %>%
+  as_tsibble() %>%
+  autoplot(avg_counts)
+```

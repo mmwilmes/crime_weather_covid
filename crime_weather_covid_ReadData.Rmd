@@ -101,7 +101,7 @@ aggregate_crime_counts_per_day <- function(counts_day){
 
   daily_counts <- counts_day %>%
   group_by(date) %>%
-  summarize(counts = sum(count))
+  summarize(counts = sum(count), .group = 'keep')
   return(daily_counts)
 }
 ```
@@ -109,7 +109,7 @@ aggregate_crime_counts_per_day <- function(counts_day){
 ```{r aggregate counts per offense and day}
 aggregate_crime_counts_per_offence_and_day <- function(counts_day){
   daily_counts <- counts_day %>%
-  # TODO --> more distinct descriptions than iucr, not sure what's kept in this step
+  # TODO --> more distinct descriptions than iucr (needs data cleanup!), so we get more groups as we should
   group_by(date, iucr, primary_type, description) %>%
   summarize(counts = sum(count))
   return(daily_counts)
@@ -231,7 +231,7 @@ Turn data frame into a tsibble.
 ```{r transform into tsibble}
 weather_processing <- function(weather){
   weather$date <- as.Date(weather$date)
-  daily_weather <- as_tsibble(weather, index = date, regular = TRUE, interval = day)
+  daily_weather <- as_tsibble(weather, index = date, regular = TRUE)
   return(daily_weather)
 }
 ```

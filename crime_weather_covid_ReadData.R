@@ -1,4 +1,4 @@
-## ----install packages, eval=FALSE, message=FALSE, warning=FALSE---------------------------------------------------
+## ----install packages, eval=FALSE, message=FALSE, warning=FALSE----------------------------------------------------------------------------------
 ## # set eval=TRUE if running script for the first time
 ## if(!require("dplyr")) install.packages("dplyr")
 ## if(!require("ggseas")) install.packages("ggseas")
@@ -11,7 +11,7 @@
 ## if(!require("fable")) install.packages("fable")  # forecasting package of the tidyverse family
 
 
-## ----eval=TRUE, message=FALSE, warning=FALSE----------------------------------------------------------------------
+## ----eval=TRUE, message=FALSE, warning=FALSE-----------------------------------------------------------------------------------------------------
 library(dplyr)
 library(bigrquery)
 library(ggplot2)
@@ -24,7 +24,7 @@ library(feasts)
 library(ggpmisc) # plot R^2 in scatter plot
 
 
-## ----set up credentials, eval = TRUE------------------------------------------------------------------------------
+## ----set up credentials, eval = TRUE-------------------------------------------------------------------------------------------------------------
 # Set Google Cloud project ID here
 read_creds <- function(){
     project_name <- read_file("./GC_credentials.txt")
@@ -32,14 +32,14 @@ read_creds <- function(){
 }
 
 
-## ----setup crime data request, eval = TRUE, echo = FALSE, message=FALSE, warning=FALSE----------------------------
+## ----setup crime data request, eval = TRUE, echo = FALSE, message=FALSE, warning=FALSE-----------------------------------------------------------
 build_crime_SQL_query <- function(){
   sql <- "SELECT iucr, primary_type, description, date FROM `bigquery-public-data.chicago_crime.crime`"
   return(sql)
 }
 
 
-## ----execute SQL call for crime data------------------------------------------------------------------------------
+## ----execute SQL call for crime data-------------------------------------------------------------------------------------------------------------
 get_crime_data <- function(){
   billing <- read_creds()
   sql <- build_crime_SQL_query()
@@ -49,7 +49,7 @@ get_crime_data <- function(){
 }
 
 
-## ----add colum of ones --> one row is one offense count-----------------------------------------------------------
+## ----add colum of ones --> one row is one offense count------------------------------------------------------------------------------------------
 crime_data_processing <- function(counts_day){
   counts_day$count <- rep(1, nrow(counts_day))
   # format as date (and drop the time part)
@@ -60,22 +60,22 @@ crime_data_processing <- function(counts_day){
 }
 
 
-## ----aggregate counts per day-------------------------------------------------------------------------------------
+## ----aggregate counts per day--------------------------------------------------------------------------------------------------------------------
 aggregate_crime_counts_per_day <- function(counts_day){
   # group by day (across offense types)
   counts_day <- tibble(counts_day)
 
   daily_counts <- counts_day %>%
   group_by(date) %>%
-  summarize(counts = sum(count))
+  summarize(counts = sum(count), .group = 'keep')
   return(daily_counts)
 }
 
 
-## ----aggregate counts per offense and day-------------------------------------------------------------------------
+## ----aggregate counts per offense and day--------------------------------------------------------------------------------------------------------
 aggregate_crime_counts_per_offence_and_day <- function(counts_day){
   daily_counts <- counts_day %>%
-  # TODO --> more distinct descriptions than iucr, not sure what's kept in this step
+  # TODO --> more distinct descriptions than iucr (needs data cleanup!), so we get more groups as we should
   group_by(date, iucr, primary_type, description) %>%
   summarize(counts = sum(count))
   return(daily_counts)
@@ -86,7 +86,7 @@ aggregate_crime_counts_per_offence_and_day <- function(counts_day){
 
 
 
-## ----main function to get total crime data per day----------------------------------------------------------------
+## ----main function to get total crime data per day-----------------------------------------------------------------------------------------------
 get_crime_per_day <- function(){
   counts_day <- get_crime_data()
   print("Started data processing")
@@ -98,7 +98,7 @@ get_crime_per_day <- function(){
 }
 
 
-## ----main function to get crime data per offense type and day-----------------------------------------------------
+## ----main function to get crime data per offense type and day------------------------------------------------------------------------------------
 get_crime_counts_per_type_and_day <- function(){
   counts_day <- get_crime_data()
   print("Started data processing")
@@ -110,7 +110,7 @@ get_crime_counts_per_type_and_day <- function(){
 }
 
 
-## ----setup weather request----------------------------------------------------------------------------------------
+## ----setup weather request-----------------------------------------------------------------------------------------------------------------------
 build_weather_sql <- function(){
 sql <- "
 #standardsql
@@ -138,7 +138,7 @@ WHERE
 }
 
 
-## ----execute weather SQL call-------------------------------------------------------------------------------------
+## ----execute weather SQL call--------------------------------------------------------------------------------------------------------------------
 # Execute the query and store the result
 fetch_weather_data <- function(){
   sql <- build_weather_sql()
@@ -152,15 +152,15 @@ fetch_weather_data <- function(){
 
 
 
-## ----transform into tsibble---------------------------------------------------------------------------------------
+## ----transform into tsibble----------------------------------------------------------------------------------------------------------------------
 weather_processing <- function(weather){
   weather$date <- as.Date(weather$date)
-  daily_weather <- as_tsibble(weather, index = date, regular = TRUE, interval = day)
+  daily_weather <- as_tsibble(weather, index = date, regular = TRUE)
   return(daily_weather)
 }
 
 
-## ----main function to get weather data----------------------------------------------------------------------------
+## ----main function to get weather data-----------------------------------------------------------------------------------------------------------
 get_weather_data <- function(){
   weather <- fetch_weather_data()
   daily_weather <- weather_processing(weather)
