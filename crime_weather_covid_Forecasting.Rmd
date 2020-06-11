@@ -176,3 +176,50 @@ The drift and naive model center around zero and have too long tails to be consi
 aug  %>% ACF(.resid) %>% autoplot() + ggtitle("ACF of residuals")
 ```
 The residuals of all four models show (severe) autocorrelation (i.e., the models do not account for all variation and could be improved.)
+
+## Produce diagnostics graphs in one line
+
+```{r}
+train %>% model(SNAIVE(avg_counts)) %>% gg_tsresiduals()
+```
+
+## Portmanteau test --> 
+
+Check autocorrelation formally (i.e., not visually as above) using a portmanteau test that also account for multiple testing. It tests if multiple correlation values (at different lags) are statistically larger than expected under a white noice scenario.
+
+There are multiple variations of portmanteay tests: for example Box-Pierce test and Ljung-Box test.
+
+```{r test if residuals are autocorrelated using Box-Pierce test}
+# lag=h and fitdf=K
+aug %>%  features(.resid, box_pierce, lag=10, dof=0)
+```
+
+```{r test if residuals are autocorrelated using Ljung-Box test}
+# lag=h and fitdf=K
+aug %>% features(.resid, ljung_box, lag=10, dof=0)
+```
+As deduced from the ACF plots above, both tests confirm that the residuals of all four models have significant auto-correlation (bp_pvalue = 0).
+
+If your model estimates parameters (such as the drift model), remember to set the dof (degree of freedom) accordingly (i.e., drift model estimates one parameter so dof in the portmanteau test should be set to 1).
+
+## Estimating error of a forcast
+
+When forecasting one step ahead, the standard deviation of the forecast distribution is almost the same as the standard deviation of the residuals. In fact, the two standard deviations are identical if there are no parameters to be estimated, as is the case with the naïve method. For forecasting methods involving parameters to be estimated (e.g., drift method), the standard deviation of the forecast distribution is slightly larger than the residual standard deviation, although this difference is often ignored.
+
+We can mathematically derive the forecast standard deviation under the assumption of uncorrelated residuals. Prediction intervals can easily be computed using the fable package. By default, the 80% and 95% certainty levels are shown (but can be adjusted using the `level` argument).
+```{r}
+train %>%
+  model(SNAIVE(avg_counts)) %>%
+  forecast(h = 10) %>%
+  autoplot(train)
+```
+
+When the distribution of the resituals do not follow a normal distribution (but are uncorrelated), you can use bootstrapping. Bootstrapping assumes that the future error is similar to the error in the past. So you randomly select from the past residuals to determine the forcasting error.
+
+```{r bootstrapping}
+fit <- train %>% model(SNAIVE(avg_counts))
+fc <- fit %>% forecast(h = 10, bootstrap = TRUE)
+fc %>% autoplot(train) +
+  ggtitle("Prediction of simple assault cases (seasonal naive method)")
+```
+Because there is no normality assumption, the prediction intervals are not symmetric.
