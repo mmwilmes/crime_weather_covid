@@ -1,0 +1,162 @@
+---
+title: "crime_weather_covid_Regression"
+author: "Madlen Wilmes"
+date: "6/15/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+### Load packages
+
+```{r eval=TRUE, message=FALSE, warning=FALSE}
+library(dplyr)
+library(bigrquery)
+library(ggplot2)
+library(tidyr)
+library(lubridate) # handle date information
+library(readr) # read txt file with credentials
+library(fable)
+#devtools::install_github("tidyverts/fabletools", force = TRUE)
+library(fabletools)
+library(tsibble)
+library(feasts)
+library(ggpmisc) # plot R^2 in scatter plot
+```
+
+### Retrieve Data from BigQuery
+```{r get crime data}
+source("crime_weather_covid_ReadData.R")
+# daily_counts <- get_crime_per_day()
+daily_counts_per_type <- get_crime_counts_per_type_and_day()
+daily_weather <- get_weather_data()
+```
+
+```{r join and save}
+# left join throws (strange) error if length of tsibble not specified
+  daily_crime_weather_per_type <- left_join(daily_counts_per_type[1:nrow(daily_counts_per_type),], daily_weather, by = "date")
+write.csv(daily_crime_weather_per_type, "crime_weather_day_per_type.csv", row.names = FALSE)
+```
+
+## Read csv, if you've aleady retrieved data today
+```{r read csv with crime and weather per type and day}
+daily_counts_per_type <- read.csv("crime_weather_day_per_type.csv")
+daily_counts_per_type$date <- as.Date(daily_counts_per_type$date)
+daily_counts_per_type <- as_tsibble(daily_counts_per_type, index=date, key=c(iucr, primary_type, description)) %>% arrange(date)
+```
+
+```{r calclulate monthly averages}
+monthly_simple_assault <- daily_counts_per_type %>%
+  group_by(iucr) %>%
+  index_by(year_month = yearmonth(date)) %>% # monthly aggregates
+  summarise(
+    avg_counts = mean(counts, na.rm = TRUE),
+    avg_temp = mean(temperature, na.rm = TRUE),
+    avg_vis =  mean(visibility, na.rm = TRUE),
+    avg_wind_speed =  mean(wind_speed, na.rm = TRUE),
+    avg_wind_gust = mean(wind_gust, na.rm = TRUE),
+    avg_prec = mean(precipitation, na.rm = TRUE), 
+    avg_snow = mean(snow_depth, na.rm = TRUE)
+    ) %>%
+  filter(iucr == '0560')
+monthly_simple_assault <- monthly_simple_assault[,-1]
+```
+
+
+# Simple linear regression
+
+- regression model allows for a linear relationship between the forecast variable y and a single predictor variable x
+
+$y_i = \beta_0 + \beta_1 x_i + \epsilon_i$
+
+- intercept $\beta_0$ represents the predicted value of $y$ when $x=0$
+- slope $\beta_1$ represents the average predicted change in $y$ resulting from a one unit increase in  
+$x$
+- we assume that the model is a reasonable approximation to reality; that is, the relationship between the forecast variable and the predictor variables satisfies this linear equation
+- errors have mean zero; otherwise the forecasts will be systematically biased.
+- errors are not autocorrelated; otherwise the forecasts will be inefficient, as there is more information in the data that could be exploited.
+- errors are unrelated to the predictor variables; otherwise there would be more information that should be included in the systematic part of the model.
+- also useful to have errors being normally distributed with a constant variance $σ^2$ in order to easily produce prediction intervals
+
+```{r filter daily simple assault and counts by temperature}
+monthly_simple_assault %>%
+  ggplot() +
+  aes(x=avg_temp, y=avg_counts) +
+    ylab("Avg simple assault cases") +
+    xlab("Avg temperature") +
+    geom_point() +
+    geom_smooth(method="lm", se=FALSE) +
+    stat_poly_eq(formula = y ~ x,
+                eq.with.lhs = "italic(hat(y))~`=`~",
+                aes(label = paste(..eq.label.., ..rr.label.., sep = "~~~")), 
+                parse = TRUE)
+```
+Every 0.3F increase, causes on average one more simple assauld case.
+
+
+```{r linear model avg_counts by avg_temp}
+monthly_simple_assault %>%
+  model(TSLM(avg_counts ~ avg_temp)) %>%
+  report()
+```
+
+
+# Multivariate regression
+
+- estimate coefficients (betas) from the data
+- choose coefficients to minimize sum of the squared errors (least square means)
+- least squares estimation --> gives the least value for the sum of squared errors
+
+```{r fit multivariate time series linear model (TSLM)}
+fit.consMR <- monthly_simple_assault %>%
+  model(
+    tslm = TSLM(avg_counts ~ avg_temp + avg_prec + avg_vis + avg_wind_gust + avg_wind_speed)
+    )
+report(fit.consMR)
+```
+ For forecasting purposes, the right-most columns are of limited interest. The “t value” is the ratio of an estimated  
+$β$ coefficient to its standard error, and the last column gives the p-value: the probability of the estimated  
+$β$ coefficient being as large as it is if there was no real relationship between consumption and the corresponding predictor. This is useful when studying the effect of each predictor, but is not particularly useful for forecasting.
+
+```{r plot fitted values vs real values}
+augment(fit.consMR) %>%
+  ggplot(aes(x = year_month)) +
+  geom_line(aes(y = avg_counts, colour = "Data")) +
+  geom_line(aes(y = .fitted, colour = "Fitted")) +
+  xlab("Year") + ylab(NULL) +
+  ggtitle("Avg monthly simple assault cases") +
+  guides(colour=guide_legend(title=NULL))
+```
+The model does not well capture the general negative trend in the data.
+
+```{r}
+augment(fit.consMR) %>%
+  ggplot(aes(x=year_month, y=.fitted)) +
+  geom_point() +
+  ylab("Fitted (predicted values)") +
+  xlab("Data (actual values)") +
+  ggtitle("Avg monthly simple assault values") +
+   stat_poly_eq(formula = y ~ x,
+                eq.with.lhs = "italic(hat(y))~`=`~",
+                aes(label = paste(..eq.label.., ..rr.label.., sep = "~~~")), 
+                parse = TRUE) +
+  geom_smooth(method="lm", se=FALSE)
+```
+## Goodness-of-fit
+
+- coefficient of determination, or $R^2$
+- square of the correlation between the observed $y$ values and the predicted $\hat{y}$ values
+-  it reflects the proportion of variation in the forecast variable that is accounted for (or explained) by the regression model
+- In simple linear regression, the value of $R^2$ is equal to the square of the correlation between $y$ and $x$ (provided an intercept has been included)
+- if predictions are close to the actual values, we would expect $R^2$ to be close to 1
+
+## Standard error of the regression
+
+- standard deviation of the residuals, which is often known as the “residual standard error”
+- in the above model, the residual standard error is 9.755
+- standard error is related to the size of the average error that the model produces. We can compare this error to the sample mean of $y$ or with the standard deviation of $y$ to gain some perspective on the accuracy of the model
+- used when generating prediction intervals
+
+## Evaluating the regression model

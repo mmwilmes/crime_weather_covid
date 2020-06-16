@@ -9,6 +9,22 @@ output: html_document
 knitr::opts_chunk$set(echo = TRUE)
 ```
 
+### Load packages
+
+```{r eval=TRUE, message=FALSE, warning=FALSE}
+library(dplyr)
+library(bigrquery)
+library(ggplot2)
+library(tidyr)
+library(lubridate) # handle date information
+library(readr) # read txt file with credentials
+library(fable)
+#devtools::install_github("tidyverts/fabletools", force = TRUE)
+library(fabletools)
+library(tsibble)
+library(feasts)
+library(ggpmisc) # plot R^2 in scatter plot
+```
 
 ### Retrieve Data from BigQuery
 ```{r get crime data}
@@ -20,8 +36,8 @@ daily_weather <- get_weather_data()
 
 ```{r join and save}
 # left join throws (strange) error if length of tsibble not specified
-  daily_crime_weather_per_type <- left_join(daily_counts_per_type[1:nrow(daily_counts_per_type),], daily_weather, by = "date")
-  write.csv(daily_crime_weather_per_type, "crime_weather_day_per_type.csv", row.names = FALSE)
+daily_crime_weather_per_type <- left_join(daily_counts_per_type[1:nrow(daily_counts_per_type),], daily_weather, by = "date")
+write.csv(daily_crime_weather_per_type, "crime_weather_day_per_type.csv", row.names = FALSE)
 ```
 
 ## Read csv, if you've aleady retrieved data today
@@ -39,9 +55,9 @@ daily_counts_per_type <- as_tsibble(daily_counts_per_type, index=date, key=c(iuc
 ## monthly counts of simple assault cases
 monthly_simple_assault <- daily_counts_per_type %>% 
       group_by(iucr) %>%
-      filter(iucr == '0560') %>%
       index_by(year_month = yearmonth(date)) %>% # monthly aggregates
-      summarise(avg_counts = mean(counts, na.rm = TRUE))
+      summarise(avg_counts = mean(counts, na.rm = TRUE)) %>%
+      filter(iucr == '0560')
 monthly_simple_assault <- monthly_simple_assault[,-1]
 ```
 
@@ -96,7 +112,7 @@ monthly_simple_assault %>%
 
 ## Show all methods in one graph
 
-```{r}
+```{r fit all simple models and plot}
 # Set training data from 2001 to 2017
 train <- monthly_simple_assault %>% filter_index("2001" ~ "2017")
 # Fit the models
@@ -183,7 +199,7 @@ The residuals of all four models show (severe) autocorrelation (i.e., the models
 train %>% model(SNAIVE(avg_counts)) %>% gg_tsresiduals()
 ```
 
-## Portmanteau test --> 
+## Portmanteau test
 
 Check autocorrelation formally (i.e., not visually as above) using a portmanteau test that also account for multiple testing. It tests if multiple correlation values (at different lags) are statistically larger than expected under a white noice scenario.
 
@@ -202,7 +218,7 @@ As deduced from the ACF plots above, both tests confirm that the residuals of al
 
 If your model estimates parameters (such as the drift model), remember to set the dof (degree of freedom) accordingly (i.e., drift model estimates one parameter so dof in the portmanteau test should be set to 1).
 
-## Estimating error of a forcast
+## Estimating prediction intervals 
 
 When forecasting one step ahead, the standard deviation of the forecast distribution is almost the same as the standard deviation of the residuals. In fact, the two standard deviations are identical if there are no parameters to be estimated, as is the case with the naïve method. For forecasting methods involving parameters to be estimated (e.g., drift method), the standard deviation of the forecast distribution is slightly larger than the residual standard deviation, although this difference is often ignored.
 
@@ -223,3 +239,86 @@ fc %>% autoplot(train) +
   ggtitle("Prediction of simple assault cases (seasonal naive method)")
 ```
 Because there is no normality assumption, the prediction intervals are not symmetric.
+
+## Estimating forecasting error
+
+- forecast “error” is the difference between an observed value and its forecast
+- forecast errors are different from residuals: (1) residuals are calculated on the training set while forecast errors are calculated on the test set (2) residuals are based on one-step forecasts while forecast errors can involve multi-step forecasts
+- split data into training and test set
+- test set approximately 20% of complete data set (at least as large as forecast)
+- use `dplyr` functions `filter` and `slice` to split the data
+
+```{r slice example}
+# use last 19 months for test set
+test_set <- monthly_simple_assault %>%
+  slice(n()-19:0)
+# slice also works on groups
+```
+
+There are several ways to estimate forecasting error:
+
+*scale-dependent measures* (i.e., only compare models for data with identical units)
+Mean absolute error: MAE  --> forecast method that minimises the MAE will lead to forecasts of the median
+Root mean squared error: RMSE --> minimising the RMSE will lead to forecasts of the mean
+
+*unit-free errors* (i.e., useful to compare forecast performances between data sets)
+Mean absolute percentage error: MAPE
+Problems: 
+- MAPE is infinite or undefined if y_t = 0 for any t in the series, and having extreme values if any y_t is close to zero.
+- assumes the unit of measurement has a meaningful zero (not the case for temperature in C or F!)
+- puts a heavier penalty on negative errors than on positive errors --> “symmetric” MAPE (sMAPE) corrects that but is flawed (don't use)
+
+*scaled errors*
+- mean absolute scaled error (MASE)
+- alternative to using percentage errors when comparing forecast accuracy across series with different units
+- scale errors based on the training MAE from a simple forecast method (e.g., naive, seasonal naive)
+- scaled error is less than one if it arises from a better forecast than the average naïve forecast computed on the training data
+- greater than one if the forecast is worse than the average naïve forecast computed on the training data
+
+```{r}
+train_set <- monthly_simple_assault %>% filter_index("2001" ~ "2018")
+
+# Fit the models
+assault_fit <- train_set %>%
+  model(
+    Mean = MEAN(avg_counts),
+    `Naïve` = NAIVE(avg_counts),
+    `Seasonal naïve` = SNAIVE(avg_counts),
+    `Drift` = RW(avg_counts ~ drift())
+  )
+# Generate forecasts for 28 mo (the lenght of the test set)
+assault_fc <- assault_fit %>% forecast(h=28)
+
+# Function throws error (also with minimal example) --> contacted Rob Hyndman
+accuracy(assault_fc, monthly_simple_assault)
+```
+The Seasonal naive model has the smallest (absolute) value, and, hence, performs best. Note that not all measures may provide the same answer.
+
+## Cross-validation
+- testing a series of test sets (adding in more and more values)
+- each (out-of-sample) test set has a single observation (the obervation following the training set)
+- forecast accuracy is computed by averaging over the test sets
+
+
+### Compare the accuracy obtained via time series cross-validation with the residual accuracy
+
+```{r }
+# Time series cross-validation accuracy
+simple_assault_train <- monthly_simple_assault %>%
+  slice(1:(n()-1)) %>%
+  # start with at least 5 points, proceed by one step
+  stretch_tsibble(.init = 5, .step = 1)
+  
+fc <- simple_assault_train %>%
+  model(SNAIVE(avg_counts)) %>%
+  forecast(h=1)
+
+fc %>% accuracy(monthly_simple_assault)
+```
+
+```{r print residual accuracy for comparison}
+# Residual accuracy
+monthly_simple_assault %>% model(SNAIVE(avg_counts)) %>% accuracy()
+```
+
+Take-home: forecasting error (from residuals) judges how well a particular model fits the data (how close does the predicted value lay to the measured value). Cross-validation makes a statement how well our model forecasts values that are not part of the training set. If the forecasting error and cross-validation are of similar size, we are not overfitting (i.e., we didn't make our model fit the data super tight, but lowered ability to forecast out-of-sample/future data).

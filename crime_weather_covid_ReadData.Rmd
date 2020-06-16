@@ -101,7 +101,7 @@ aggregate_crime_counts_per_day <- function(counts_day){
 
   daily_counts <- counts_day %>%
   group_by(date) %>%
-  summarize(counts = sum(count), .group = 'keep')
+  summarize(counts = sum(count))
   return(daily_counts)
 }
 ```
